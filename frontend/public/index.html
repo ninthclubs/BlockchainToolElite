@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta http-equiv="Cross-Origin-Opener-Policy" content="same-origin" />
+    <meta http-equiv="Cross-Origin-Embedder-Policy" content="require-corp" />
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>🔐 FHE Expense Tracker</title>
+    <style>
+      :root{--bg:#0e1222;--glass:rgba(255,255,255,.06);--stroke:rgba(255,255,255,.12);--txt:#e9f0ff;--muted:rgba(233,240,255,.70);--accent:#77e0ff;--good:#5cffb0;--radius:22px;--shadow:0 20px 50px rgba(0,0,0,.35)}
+      *{margin:0;padding:0;box-sizing:border-box}
+      html,body{height:100%}
+      body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,"Inter",sans-serif;background:var(--bg);color:var(--txt);overflow-x:hidden}
+      .container{max-width:760px;margin:0 auto;padding:32px 18px 64px}
+      header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;gap:12px}
+      .brand{display:flex;align-items:center;gap:12px}
+      .brand h1{font-size:clamp(22px,3.5vw,32px);font-weight:900}
+      .badge{padding:6px 10px;border-radius:999px;background:rgba(119,224,255,.18);border:1px solid var(--stroke);font-size:12px;color:var(--muted)}
+      .pill{display:inline-flex;gap:10px;align-items:center;padding:10px 12px;border-radius:999px;border:1px solid var(--stroke);background:rgba(255,255,255,.04);font-size:13px;color:var(--muted);font-weight:700}
+      .btn{appearance:none;border:0;cursor:pointer;padding:14px 18px;border-radius:14px;color:#081018;font-weight:800;letter-spacing:.3px;transition:transform .18s ease, box-shadow .18s ease;box-shadow:var(--shadow);background:linear-gradient(135deg,#9be6ff,#77e0ff)}
+      .btn.mint{background:linear-gradient(135deg,#8bffd0,#5cffb0);color:#052417}
+      .btn:disabled{opacity:.55;cursor:not-allowed}
+      .btn:not(:disabled):hover{transform:translateY(-2px)}
+      .card{background:var(--glass);border:1px solid var(--stroke);border-radius:var(--radius);box-shadow:var(--shadow);backdrop-filter:blur(14px);padding:22px 20px 20px}
+      .card h2{font-size:18px;font-weight:900;margin-bottom:16px}
+      .field label{font-size:13px;color:var(--muted);display:block;margin-bottom:8px}
+      .field input{width:100%;padding:14px;border-radius:12px;border:1px solid var(--stroke);background:rgba(255,255,255,.04);color:var(--txt);font-size:16px;outline:none}
+      .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+      .status{margin:14px 0 10px;padding:12px;border-radius:12px;border:1px dashed var(--stroke);color:var(--muted);font-weight:600;background:rgba(255,255,255,.03)}
+      .result{margin-top:8px;padding:18px;border-radius:14px;border:1px solid var(--stroke);text-align:center;font-weight:900;font-size:18px;background:linear-gradient(180deg, rgba(123,255,202,.10), rgba(119,224,255,.08))}
+      .result.good{border-color:rgba(92,255,176,.45);background:linear-gradient(180deg, rgba(92,255,176,.12), rgba(92,255,176,.06));color:var(--good)}
+      .hidden{display:none!important}
+      .loading{position:relative}
+      .loading::after{content:"";position:absolute;right:12px;top:50%;transform:translateY(-50%);width:18px;height:18px;border-radius:50%;border:3px solid rgba(255,255,255,.25);border-top-color:#fff;animation:spin 1s linear infinite}
+      @keyframes spin{to{transform:translateY(-50%) rotate(1turn)}}
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <div class="brand">
+          <div class="badge">ZAMA FHEVM</div>
+          <h1>FHE Expense Tracker</h1>
+        </div>
+        <div class="pill">Network: <b>Sepolia</b></div>
+        <button id="connect" class="btn">🔗 Connect Wallet</button>
+      </header>
+
+      <div class="card">
+        <h2>Submit & View Total</h2>
+        <div id="status" class="status">Waiting for connection…</div>
+        <div class="field">
+          <label>Amount (in cents)</label>
+          <input type="number" id="amountCents" min="0" placeholder="e.g., 2599 (= $25.99)" disabled />
+        </div>
+        <div class="row">
+          <button id="btnSubmit" class="btn mint" disabled>➕ Add Expense</button>
+          <button id="btnGetMyTotalPriv" class="btn" disabled>🔐 Show My Total</button>
+        </div>
+        <div id="myTotal" class="result hidden">–</div>
+      </div>
+    </div>
+
+    <!-- Zama Relayer SDK (official) -->
+    <script type="module" crossorigin src="https://cdn.zama.ai/relayer-sdk-js/0.1.2/relayer-sdk-js.js"></script>
+    <!-- ethers v6 -->
+    <script type="module" crossorigin src="https://cdn.jsdelivr.net/npm/ethers@6.15.0/+esm"></script>
+
+    <script type="module">
+      import { BrowserProvider, Contract, getAddress } from "https://cdn.jsdelivr.net/npm/ethers@6.15.0/+esm";
+      import { initSDK, createInstance, SepoliaConfig } from "https://cdn.zama.ai/relayer-sdk-js/0.1.2/relayer-sdk-js.js";
+
+      const $ = (id) => document.getElementById(id);
+      const status = $("status");
+      const connectBtn = $("connect");
+      const amountCents = $("amountCents");
+      const btnSubmit = $("btnSubmit");
+      const btnGetMyTotalPriv = $("btnGetMyTotalPriv");
+      const myTotal = $("myTotal");
+
+      // -------- logger --------
+      let STEP = 0;
+      const log = (msg, extra) => {
+        const ts = new Date().toLocaleTimeString();
+        if (extra !== undefined) console.log(`[${++STEP}] ${ts} • ${msg}`, extra);
+        else console.log(`[${++STEP}] ${ts} • ${msg}`);
+      };
+
+      const CONTRACT_ADDRESS = "0xAf8E51925D4d994856B1B081185516caF03ecf13"; // deployed
+      const KMS_ADDRESS      = "0x1364cBBf2cDF5032C47d8226a6f6FBD2AFCDacAC";
+      const RELAYER_URL      = "https://relayer.testnet.zama.cloud";
+      const GATEWAY_URL      = "https://gateway.sepolia.zama.ai/";
+
+      const abi = [
+        { inputs:[{name:"amountExt",type:"bytes32"},{name:"proof",type:"bytes"}], name:"submitExpense", outputs:[{name:"newTotal",type:"bytes32"}], stateMutability:"nonpayable", type:"function" },
+        { inputs:[], name:"getMyTotalHandle", outputs:[{type:"bytes32"}], stateMutability:"view", type:"function" }
+      ];
+
+      let provider, signer, user, relayer, contract;
+      const SEPOLIA_HEX = "0xaa36a7"; const SEPOLIA_BIG = 11155111n;
+      const setStatus = (t) => { status.textContent = t; log(`STATUS → ${t}`); };
+      const setLoading = (el, on) => el.classList.toggle('loading', !!on);
+      const showBox = (el, on=true) => el.classList.toggle('hidden', !on);
+
+      async function ensureSepolia(){
+        if (!window.ethereum) throw new Error("MetaMask not found");
+        const chainHex = await window.ethereum.request({ method:"eth_chainId" });
+        log(`Current chainId: ${chainHex}`);
+        if (BigInt(chainHex) !== SEPOLIA_BIG) {
+          log(`Switching to Sepolia (${SEPOLIA_HEX})…`);
+          try{ await window.ethereum.request({ method:"wallet_switchEthereumChain", params:[{ chainId: SEPOLIA_HEX }] }); }
+          catch(e){
+            if (e?.code===4902) {
+              log("Adding Sepolia network to wallet…");
+              await window.ethereum.request({ method:"wallet_addEthereumChain", params:[{ chainId: SEPOLIA_HEX, chainName:"Sepolia", nativeCurrency:{ name:"SepoliaETH", symbol:"SEP", decimals:18 }, rpcUrls:["https://sepolia.infura.io/v3/"], blockExplorerUrls:["https://sepolia.etherscan.io"] }]});
+            } else { throw e; }
+          }
+        }
+      }
+      if (window.ethereum?.on) { window.ethereum.on("chainChanged", () => window.location.reload()); window.ethereum.on("accountsChanged", () => window.location.reload()); }
+
+      async function connect(){
+        setLoading(connectBtn, true);
+        try{
+          log("Starting connect()…");
+          await ensureSepolia();
+          provider = new BrowserProvider(window.ethereum);
+          await provider.send("eth_requestAccounts", []);
+          signer = await provider.getSigner();
+          user = await signer.getAddress();
+          const net = await provider.getNetwork();
+          log(`Connected account: ${user}`);
+          log(`Network chainId (bigint): ${net.chainId.toString()}`);
+          if (net.chainId !== SEPOLIA_BIG) throw new Error("Please switch to Sepolia");
+          setStatus(`✅ Connected: ${user.slice(0,6)}…${user.slice(-4)}`);
+          [amountCents, btnSubmit, btnGetMyTotalPriv].forEach(el => el.disabled = false);
+          connectBtn.disabled = true; connectBtn.textContent = `Connected · ${user.slice(0,6)}…${user.slice(-4)}`;
+
+          log("Initializing Relayer SDK…");
+          await initSDK();
+          const relayerCfg = { ...SepoliaConfig, network: window.ethereum, relayerUrl: RELAYER_URL, gatewayUrl: GATEWAY_URL, debug: true };
+          const codeKMS = await provider.getCode(KMS_ADDRESS); log(`KMS code length: ${codeKMS.length}`); if (codeKMS === "0x") throw new Error("KMS not found");
+          const codeCtr = await provider.getCode(CONTRACT_ADDRESS); log(`Contract code length: ${codeCtr.length}`); if (codeCtr === "0x") throw new Error("Contract not found");
+          relayer = await createInstance(relayerCfg);
+          log("Relayer ready ✅", relayerCfg);
+
+          contract = new Contract(CONTRACT_ADDRESS, abi, signer);
+          log(`Contract instance created @ ${CONTRACT_ADDRESS}`);
+        }catch(e){ console.error(e); setStatus(`❌ ${e.message}`); }
+        finally{ setLoading(connectBtn, false); }
+      }
+      connectBtn.addEventListener('click', connect);
+
+      // Add Expense
+      btnSubmit.addEventListener('click', async () => {
+        try{
+          if (!relayer || !contract) throw new Error('Connect first');
+          const centsNum = parseInt(amountCents.value||'0');
+          const cents = BigInt(centsNum);
+          if (cents < 0n) throw new Error('Amount must be >= 0');
+          log(`Submitting expense: ${centsNum} cents`);
+          setLoading(btnSubmit, true); setStatus('Encrypting & sending…'); showBox(myTotal, false);
+          const buf = relayer.createEncryptedInput(getAddress(CONTRACT_ADDRESS), getAddress(user));
+          buf.add64(cents);
+          const { handles, inputProof } = await buf.encrypt();
+          log(`Encrypted handle[0]:`, handles[0]);
+          log(`proof length: ${inputProof.length}`);
+          const tx = await contract.submitExpense(handles[0], inputProof, { gasLimit: 3_000_000 });
+          log(`tx.hash: ${tx.hash}`);
+          await tx.wait(); setStatus('✅ Expense submitted');
+        }catch(e){ console.error(e); setStatus(`❌ ${e.message}`); }
+        finally{ setLoading(btnSubmit, false); }
+      });
+
+      // Show My Total (private, userDecrypt)
+      btnGetMyTotalPriv.addEventListener('click', async () => {
+        try{
+          if (!relayer || !contract) throw new Error('Connect first');
+          setLoading(btnGetMyTotalPriv, true); setStatus('Fetching my handle…');
+          const handle = await contract.getMyTotalHandle();
+          log(`My handle: ${handle}`);
+          if (!handle || /^0x0+$/.test(handle)) { setStatus('ℹ️ No expenses yet'); showBox(myTotal, true); myTotal.textContent = 'Total: 0'; return; }
+
+          const kp = await relayer.generateKeypair();
+          log('Keypair generated');
+          const startTs = Math.floor(Date.now()/1000).toString();
+          const days = '7';
+          const eip712 = relayer.createEIP712(kp.publicKey, [CONTRACT_ADDRESS], startTs, days);
+          log('EIP-712 prepared', {startTs, days});
+          const sig = await signer.signTypedData(eip712.domain, { UserDecryptRequestVerification: eip712.types.UserDecryptRequestVerification }, eip712.message);
+          log('EIP-712 signature created (len): ' + sig.length);
+
+          setStatus('🔐 Decrypting…');
+          const out = await relayer.userDecrypt(
+            [{ handle, contractAddress: CONTRACT_ADDRESS }],
+            kp.privateKey, kp.publicKey,
+            sig.replace('0x',''), [CONTRACT_ADDRESS], user, startTs, days
+          );
+          log('userDecrypt output:', out);
+          const value = out[handle];
+          const total = typeof value === 'bigint' ? Number(value) : Number(value);
+          log(`Decrypted total: ${total}`);
+          showBox(myTotal, true); myTotal.textContent = `💰 My Total: ${total} cents`; myTotal.classList.add('good'); setStatus('✅ Decrypted');
+        }catch(e){ console.error(e); setStatus(`❌ ${e.message}`); }
+        finally{ setLoading(btnGetMyTotalPriv, false); }
+      });
+    </script>
+  </body>
+</html>
